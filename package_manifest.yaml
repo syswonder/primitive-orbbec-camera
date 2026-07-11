@@ -1,0 +1,54 @@
+# Orbbec Gemini 330-series RGBD camera primitive for Ranger Mini.
+#
+# Wraps the upstream `orbbec_camera` (apt-installed via ros-humble-orbbec-camera).
+# Atlas-registers the streams it produces under generic
+# `primitive/camera/*` contracts. Consumers (mapping_rbnx, scene, any
+# vision skill) discover the topic names via atlas — no hardcoded
+# `/camera/...` paths on the consumer side.
+#
+# Lifecycle: start.sh launches the atlas bridge ONLY (no ROS spawn).
+# `rbnx boot` then calls `Driver(CMD_INIT, config_json)` on the
+# primitive/camera/driver gRPC interface — that handler parses config,
+# starts the upstream orbbec_camera.launch.py, waits for the first RGB
+# frame, and only THEN declares rgb / depth data interfaces on atlas.
+#
+# Capability surface (mode = abstract pattern, transport = wire):
+#   primitive/camera/driver         mode=rpc        transport=gRPC
+#   primitive/camera/rgb            mode=topic_out  transport=ROS2  sensor_msgs/Image (RGB8)
+#   primitive/camera/depth          mode=topic_out  transport=ROS2  sensor_msgs/Image (16UC1)
+#   primitive/camera/extrinsics     mode=topic_out  transport=ROS2  TransformStamped (TODO)
+#   primitive/camera/snapshot       mode=rpc        transport=MCP   one-shot RGB (TODO)
+#   primitive/camera/depth_snapshot mode=rpc        transport=MCP   one-shot depth (TODO)
+#
+# Config (passed via `Driver(CMD_INIT, config_json)`):
+#   camera_name          default "camera"                     — ROS namespace
+#   camera_model         default "gemini330_series"           — orbbec model config
+#   color_profile        default "640x480x30"                 — color stream (WxHxFPS)
+#   depth_profile        default "640x480x30"                 — depth stream (WxHxFPS)
+#   depth_registration   default true                         — depth → color alignment
+#   enable_color         default true
+#   enable_depth         default true
+#   enable_point_cloud   default false
+#   enable_imu           default false                        — IMU published if supported
+#   sentinel_timeout_s   default 30.0
+manifestVersion: 1
+
+package:
+  name: com.robonix.ranger.orbbec_camera
+  version: 0.1.0
+  vendor: robonix
+  description: Orbbec Gemini 330-series RGBD camera driver wrapper — declares RGB + depth + extrinsics contracts.
+  license: Apache-2.0
+
+capability_id: orbbec_camera
+
+build: bash scripts/build.sh
+start: bash scripts/start.sh
+
+capabilities:
+  - name: robonix/primitive/camera/driver
+  - name: robonix/primitive/camera/rgb
+  - name: robonix/primitive/camera/depth
+  - name: robonix/primitive/camera/extrinsics
+  - name: robonix/primitive/camera/snapshot
+  - name: robonix/primitive/camera/depth_snapshot
