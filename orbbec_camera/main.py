@@ -72,6 +72,7 @@ _latest_rgb_jpeg: bytes | None = None
 _latest_depth_jpeg: bytes | None = None
 _rgb_frame_id: str = "camera_color_optical_frame"
 _depth_frame_id: str = "camera_depth_optical_frame"
+_rgb_received = threading.Event()
 _extrinsics_pub = None  # rclpy publisher for the latched TF
 _intrinsics_pub = None  # rclpy publisher for the latched CameraInfo
 _intrinsics_published = False  # publish K once; intrinsics are static
@@ -239,6 +240,10 @@ def _ros_image_to_jpeg(msg) -> bytes:
 
 def _on_rgb(msg) -> None:
     global _latest_rgb_jpeg, _rgb_frame_id
+    # INIT uses the permanent RGB subscription as its readiness sentinel.
+    # Avoid Capability.wait_for_topic(): destroying its temporary subscription
+    # while the Zenoh executor is spinning can terminate the shared spin loop.
+    _rgb_received.set()
     try:
         jpg = _ros_image_to_jpeg(msg)
         with _state_lock:
@@ -337,6 +342,7 @@ def init(cfg: dict):
     rgb_topic = cfg.get("rgb_topic", f"/{cam}/color/image_raw")
     depth_topic = cfg.get("depth_topic", f"/{cam}/depth/image_raw")
     sentinel_timeout = float(cfg.get("sentinel_timeout_s", 30.0))
+    _rgb_received.clear()
 
     # ── extrinsics + intrinsics config ───────────────────────────────────
     camera_info_topic = cfg.get("camera_info_topic") or os.environ.get(
@@ -429,8 +435,10 @@ def init(cfg: dict):
         daemon=True,
     ).start()
 
-    # Gate INIT on first RGB arriving — USB cameras can lag on cold boot.
-    if not cap.wait_for_topic(rgb_topic, "Image", sentinel_timeout):
+    # Gate INIT on the permanent RGB subscription. USB cameras can lag on cold
+    # boot, but no temporary ROS subscription should be created or destroyed
+    # while the process-wide executor is spinning.
+    if not _rgb_received.wait(timeout=sentinel_timeout):
         _kill_orbbec()
         return Err(f"no Image on {rgb_topic} within {sentinel_timeout:.1f}s")
 
