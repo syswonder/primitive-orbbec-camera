@@ -1,4 +1,4 @@
-# Orbbec Gemini 330-series RGBD camera primitive for Ranger Mini.
+# Orbbec Gemini 330-series RGBD camera primitive.
 #
 # Wraps the upstream `orbbec_camera` (apt-installed via ros-humble-orbbec-camera).
 # Atlas-registers the streams it produces under generic
@@ -34,11 +34,14 @@
 manifestVersion: 1
 
 package:
-  name: com.robonix.ranger.orbbec_camera
+  name: robonix.primitive.orbbec.gemini330.camera
   version: 0.1.0
   vendor: robonix
   description: Orbbec Gemini 330-series RGBD camera driver wrapper — declares RGB + depth + extrinsics contracts.
   license: Apache-2.0
+  tags: [primitive, camera, orbbec, gemini330, rgbd, ros2]
+  maintainers:
+    - Bunnycxk <2501213313@stu.pku.edu.cn>
 
 capability_id: orbbec_camera
 
