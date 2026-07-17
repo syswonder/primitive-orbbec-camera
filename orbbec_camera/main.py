@@ -56,7 +56,7 @@ from pathlib import Path
 import numpy as np
 
 from robonix_api import Primitive, Ok, Err
-from .launch_config import device_selector_args
+from .launch_config import device_preset_args, device_selector_args
 
 logging.basicConfig(
     level=os.environ.get("ORBBEC_LOG_LEVEL", "INFO"),
@@ -125,6 +125,7 @@ def _spawn_orbbec(cfg: dict) -> None:
         launch_file = "orbbec_camera.launch.py"
 
     selectors = device_selector_args(cfg)
+    preset = device_preset_args(cfg)
     args = [
         "ros2", "launch", "orbbec_camera", launch_file,
         f"camera_name:={cam}",
@@ -139,9 +140,10 @@ def _spawn_orbbec(cfg: dict) -> None:
         f"depth_width:={depth_w}",
         f"depth_height:={depth_h}",
         f"depth_fps:={depth_fps}",
-        # Disable IR streams to save USB bandwidth
-        f"device_preset:={1}",
     ]
+    # Preserve the upstream string-typed Default preset unless the deployment
+    # explicitly selects another named preset.
+    args.extend(preset)
     # Multi-camera robots must select the intended physical camera explicitly;
     # otherwise the upstream driver may bind whichever Orbbec enumerates first.
     args.extend(selectors)

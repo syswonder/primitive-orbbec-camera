@@ -30,6 +30,7 @@
 #   enable_depth         default true
 #   enable_point_cloud   default false
 #   enable_imu           default false                        — IMU published if supported
+#   device_preset        default ""                           — optional named string preset
 #   serial_number        default ""                           — optional device selector
 #   usb_port             default ""                           — optional sysfs port selector
 #   sentinel_timeout_s   default 30.0

@@ -47,11 +47,15 @@ orbbec_camera_rbnx/
   "enable_depth":         true,
   "enable_point_cloud":   false,
   "enable_imu":           false,
+  "device_preset":        "",
   "serial_number":        "",
   "usb_port":             "",
   "sentinel_timeout_s":   30.0
 }
 ```
+
+Leave `device_preset` empty to use the upstream driver's working `Default`
+preset. If set, it must be a named string preset rather than a numeric value.
 
 On robots with more than one Orbbec camera, set either `serial_number` or
 `usb_port` so the driver cannot bind a different camera due to USB enumeration
