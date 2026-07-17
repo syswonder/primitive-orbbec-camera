@@ -7,7 +7,7 @@ Owns `robonix/primitive/camera/*`. Uses the apt-installed
 ros-humble-orbbec-camera package (no source build needed).
 
 Capability surface:
-  primitive/camera/driver         rpc gRPC (lifecycle)
+  lifecycle/driver                rpc gRPC (implicit shared lifecycle)
   primitive/camera/rgb            topic_out ROS2 (continuous, raw)
   primitive/camera/depth          topic_out ROS2 (continuous, raw)
   primitive/camera/snapshot       rpc MCP (one-shot RGB JPEG — VLM-facing)
@@ -33,6 +33,8 @@ Config (from manifest):
     enable_depth         default true
     enable_point_cloud   default false
     enable_imu           default false
+    serial_number        default "" (optional device selector)
+    usb_port             default "" (optional device selector)
     sentinel_timeout_s   default 30.0
     camera_info_topic    default "/<camera_name>/color/camera_info"
     intrinsics_topic     default "/<camera_name>/intrinsics"
@@ -54,6 +56,7 @@ from pathlib import Path
 import numpy as np
 
 from robonix_api import Primitive, Ok, Err
+from .launch_config import device_preset_args, device_selector_args
 
 logging.basicConfig(
     level=os.environ.get("ORBBEC_LOG_LEVEL", "INFO"),
@@ -121,6 +124,8 @@ def _spawn_orbbec(cfg: dict) -> None:
     else:
         launch_file = "orbbec_camera.launch.py"
 
+    selectors = device_selector_args(cfg)
+    preset = device_preset_args(cfg)
     args = [
         "ros2", "launch", "orbbec_camera", launch_file,
         f"camera_name:={cam}",
@@ -135,16 +140,22 @@ def _spawn_orbbec(cfg: dict) -> None:
         f"depth_width:={depth_w}",
         f"depth_height:={depth_h}",
         f"depth_fps:={depth_fps}",
-        # Disable IR streams to save USB bandwidth
-        f"device_preset:={1}",
     ]
+    # Preserve the upstream string-typed Default preset unless the deployment
+    # explicitly selects another named preset.
+    args.extend(preset)
+    # Multi-camera robots must select the intended physical camera explicitly;
+    # otherwise the upstream driver may bind whichever Orbbec enumerates first.
+    args.extend(selectors)
     if launch_file == "orbbec_camera.launch.py":
         args.append(f"camera_model:={cam_model}")
 
     log_path = _pkg_root / "rbnx-build" / "data" / "orbbec.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_path, "ab", buffering=0)
-    log.info("spawning orbbec camera (model=%s, cam=%s) → %s", cam_model, cam, log_path)
+    selector_text = ", ".join(selectors) if selectors else "auto-discovery"
+    log.info("spawning orbbec camera (model=%s, cam=%s, device=%s) → %s",
+             cam_model, cam, selector_text, log_path)
     log.debug("launch args: %s", " ".join(args))
     _orbbec_proc = subprocess.Popen(
         args, stdout=log_fh, stderr=log_fh, start_new_session=True,

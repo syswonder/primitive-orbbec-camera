@@ -8,7 +8,7 @@ Uses the apt-installed `ros-humble-orbbec-camera` / `ros-humble-orbbec-descripti
 
 | Contract                                  | Mode      | Transport | Source / handler                                          |
 | ----------------------------------------- | --------- | --------- | --------------------------------------------------------- |
-| `robonix/primitive/camera/driver`         | rpc       | gRPC      | `Driver(CMD_INIT, config_json)` — lifecycle gate          |
+| `robonix/lifecycle/driver`                | rpc       | gRPC      | implicit shared `Driver(CMD_INIT, config_json)` lifecycle |
 | `robonix/primitive/camera/rgb`            | topic_out | ROS 2     | `/<cam>/color/image_raw` (sensor_msgs/Image)              |
 | `robonix/primitive/camera/depth`          | topic_out | ROS 2     | `/<cam>/depth/image_raw` (sensor_msgs/Image, 16UC1)      |
 | `robonix/primitive/camera/extrinsics`     | topic_out | ROS 2     | latched TransformStamped (TODO)                           |
@@ -17,7 +17,10 @@ Uses the apt-installed `ros-humble-orbbec-camera` / `ros-humble-orbbec-descripti
 
 ## Driver-init lifecycle
 
-`start.sh` only brings up the atlas bridge process. The bridge opens a gRPC server on port `ORBBEC_DRIVER_PORT` (default 50233), registers the capability and declares only `primitive/camera/driver` on atlas, then blocks on heartbeat awaiting `Driver(CMD_INIT, config_json)`.
+`start.sh` only brings up the atlas bridge process. The bridge registers the
+shared lifecycle Driver automatically; the package manifest must not declare
+the deprecated camera-specific Driver contract. It then awaits
+`Driver(CMD_INIT, config_json)`.
 
 When `rbnx boot` invokes Init it passes the manifest's `config:` block as JSON. The handler parses config (camera name, model, profiles, depth_registration, IMU on/off), spawns `ros2 launch orbbec_camera orbbec_camera.launch.py …`, waits for the first frame on the configured RGB topic, declares `primitive/camera/{rgb, depth}` on atlas, and returns ok. Atlas only ever advertises endpoints we've confirmed are publishing.
 
@@ -47,9 +50,20 @@ orbbec_camera_rbnx/
   "enable_depth":         true,
   "enable_point_cloud":   false,
   "enable_imu":           false,
+  "device_preset":        "",
+  "serial_number":        "",
+  "usb_port":             "",
   "sentinel_timeout_s":   30.0
 }
 ```
+
+Leave `device_preset` empty to use the upstream driver's working `Default`
+preset. If set, it must be a named string preset rather than a numeric value.
+
+On robots with more than one Orbbec camera, set either `serial_number` or
+`usb_port` so the driver cannot bind a different camera due to USB enumeration
+order. `usb_port` is the stable topology path reported by the Orbbec driver,
+for example `2-3`.
 
 Supported `camera_model` values (from `/opt/ros/humble/share/orbbec_camera/config/`):
 - `gemini330_series` — default, covers Gemini 335/336/330/335L/336L/330L/335Lg/335Le

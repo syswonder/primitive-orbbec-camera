@@ -7,13 +7,13 @@
 # `/camera/...` paths on the consumer side.
 #
 # Lifecycle: start.sh launches the atlas bridge ONLY (no ROS spawn).
-# `rbnx boot` then calls `Driver(CMD_INIT, config_json)` on the
-# primitive/camera/driver gRPC interface — that handler parses config,
+# `rbnx boot` auto-selects the shared `robonix/lifecycle/driver` contract and
+# calls `Driver(CMD_INIT, config_json)` — that handler parses config,
 # starts the upstream orbbec_camera.launch.py, waits for the first RGB
 # frame, and only THEN declares rgb / depth data interfaces on atlas.
 #
 # Capability surface (mode = abstract pattern, transport = wire):
-#   primitive/camera/driver         mode=rpc        transport=gRPC
+#   lifecycle/driver                mode=rpc        transport=gRPC (implicit)
 #   primitive/camera/rgb            mode=topic_out  transport=ROS2  sensor_msgs/Image (RGB8)
 #   primitive/camera/depth          mode=topic_out  transport=ROS2  sensor_msgs/Image (16UC1)
 #   primitive/camera/extrinsics     mode=topic_out  transport=ROS2  TransformStamped (TODO)
@@ -30,12 +30,15 @@
 #   enable_depth         default true
 #   enable_point_cloud   default false
 #   enable_imu           default false                        — IMU published if supported
+#   device_preset        default ""                           — optional named string preset
+#   serial_number        default ""                           — optional device selector
+#   usb_port             default ""                           — optional sysfs port selector
 #   sentinel_timeout_s   default 30.0
 manifestVersion: 1
 
 package:
   name: robonix.primitive.orbbec.gemini330.camera
-  version: 0.1.0
+  version: 0.1.1
   vendor: robonix
   description: Orbbec Gemini 330-series RGBD camera driver wrapper — declares RGB + depth + extrinsics contracts.
   license: Apache-2.0
@@ -49,7 +52,6 @@ build: bash scripts/build.sh
 start: bash scripts/start.sh
 
 capabilities:
-  - name: robonix/primitive/camera/driver
   - name: robonix/primitive/camera/rgb
   - name: robonix/primitive/camera/depth
   - name: robonix/primitive/camera/extrinsics
