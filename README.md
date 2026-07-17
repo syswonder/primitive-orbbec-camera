@@ -47,9 +47,16 @@ orbbec_camera_rbnx/
   "enable_depth":         true,
   "enable_point_cloud":   false,
   "enable_imu":           false,
+  "serial_number":        "",
+  "usb_port":             "",
   "sentinel_timeout_s":   30.0
 }
 ```
+
+On robots with more than one Orbbec camera, set either `serial_number` or
+`usb_port` so the driver cannot bind a different camera due to USB enumeration
+order. `usb_port` is the stable topology path reported by the Orbbec driver,
+for example `2-3`.
 
 Supported `camera_model` values (from `/opt/ros/humble/share/orbbec_camera/config/`):
 - `gemini330_series` — default, covers Gemini 335/336/330/335L/336L/330L/335Lg/335Le

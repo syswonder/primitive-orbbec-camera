@@ -30,12 +30,14 @@
 #   enable_depth         default true
 #   enable_point_cloud   default false
 #   enable_imu           default false                        — IMU published if supported
+#   serial_number        default ""                           — optional device selector
+#   usb_port             default ""                           — optional sysfs port selector
 #   sentinel_timeout_s   default 30.0
 manifestVersion: 1
 
 package:
   name: robonix.primitive.orbbec.gemini330.camera
-  version: 0.1.0
+  version: 0.1.1
   vendor: robonix
   description: Orbbec Gemini 330-series RGBD camera driver wrapper — declares RGB + depth + extrinsics contracts.
   license: Apache-2.0
