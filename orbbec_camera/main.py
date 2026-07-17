@@ -7,7 +7,7 @@ Owns `robonix/primitive/camera/*`. Uses the apt-installed
 ros-humble-orbbec-camera package (no source build needed).
 
 Capability surface:
-  primitive/camera/driver         rpc gRPC (lifecycle)
+  lifecycle/driver                rpc gRPC (implicit shared lifecycle)
   primitive/camera/rgb            topic_out ROS2 (continuous, raw)
   primitive/camera/depth          topic_out ROS2 (continuous, raw)
   primitive/camera/snapshot       rpc MCP (one-shot RGB JPEG — VLM-facing)
