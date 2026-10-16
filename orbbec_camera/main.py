@@ -22,6 +22,11 @@ Lifecycle:
                    declare rgb/depth/intrinsics/extrinsics topic_out
                    + snapshot + depth_snapshot.
     on_shutdown  — kill orbbec subprocess.
+    watchdog     — after bring-up, respawn the driver when frames stall
+                   while an Orbbec USB device is enumerated (unplug/replug
+                   can wedge the running driver's device state); each
+                   restart sweeps the old process group and resets the
+                   device on the bus before spawning a fresh driver.
 
 Config (from manifest):
     camera_name          default "camera"
@@ -44,6 +49,7 @@ Config (from manifest):
 """
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import signal
@@ -69,6 +75,12 @@ cap = Primitive(id="orbbec_camera", namespace="robonix/primitive/camera")
 _pkg_root: Path = Path(__file__).resolve().parent.parent
 _orbbec_proc: subprocess.Popen | None = None
 
+# ── driver supervision state (monotonic seconds) ─────────────────────────────
+_spawn_mono: float = 0.0
+_rgb_last_mono: float = 0.0
+_respawn_last_mono: float = 0.0
+_watchdog_started = False
+
 # ── snapshot state ───────────────────────────────────────────────────────────
 _state_lock = threading.Lock()
 _latest_rgb_jpeg: bytes | None = None
@@ -91,7 +103,7 @@ def _parse_profile(profile: str) -> tuple[int, int, int]:
 
 def _spawn_orbbec(cfg: dict) -> None:
     """Launch ros2 launch orbbec_camera orbbec_camera.launch.py with config args."""
-    global _orbbec_proc
+    global _orbbec_proc, _rgb_last_mono, _spawn_mono
     cam = cfg.get("camera_name", "camera")
     cam_model = cfg.get("camera_model", "gemini330_series")
     depth_reg = cfg.get("depth_registration", False)
@@ -160,23 +172,162 @@ def _spawn_orbbec(cfg: dict) -> None:
     _orbbec_proc = subprocess.Popen(
         args, stdout=log_fh, stderr=log_fh, start_new_session=True,
     )
+    _spawn_mono = time.monotonic()
+    _rgb_last_mono = 0.0  # a fresh driver has not delivered frames yet
 
 
-def _kill_orbbec() -> None:
-    p = _orbbec_proc
-    if p is None or p.poll() is not None:
-        return
+def _pgid_alive(pgid: int) -> bool:
+    """True while any process is left in the group (zombies included)."""
     try:
-        os.killpg(os.getpgid(p.pid), signal.SIGTERM)
+        os.killpg(pgid, 0)
     except ProcessLookupError:
-        return
+        return False
+    return True
+
+
+def _kill_orbbec() -> int | None:
+    """Stop the driver's process group, escalating to SIGKILL.
+
+    The container that holds the camera can ignore SIGTERM (it stalls in
+    graceful shutdown while still owning the USB device, which then wedges
+    the next spawn), so sweep the whole group — leader pid == pgid because
+    Popen used start_new_session — and never early-return on the leader's
+    exit. Returns the pgid so callers can wait out stragglers stuck in
+    kernel USB I/O.
+    """
+    p = _orbbec_proc
+    if p is None:
+        return None
+    pgid = p.pid  # group leader
     try:
-        p.wait(timeout=5.0)
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return pgid
+    try:
+        p.wait(timeout=3.0)  # reap the leader so a zombie cannot mask _pgid_alive()
     except subprocess.TimeoutExpired:
+        pass
+    deadline = time.monotonic() + 2.0
+    while _pgid_alive(pgid) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if not _pgid_alive(pgid):
+        return pgid
+    log.warning("orbbec driver: SIGKILLing straggler(s) in pgid %d", pgid)
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return pgid
+    try:
+        p.wait(timeout=1.0)  # reap a leader TERM could not stop
+    except subprocess.TimeoutExpired:
+        pass
+    deadline = time.monotonic() + 3.0
+    while _pgid_alive(pgid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if _pgid_alive(pgid):
+        log.warning("orbbec driver: pgid %d still alive after SIGKILL", pgid)
+    return pgid
+
+
+# ── driver supervision ───────────────────────────────────────────────────────
+def _orbbec_usb_present() -> bool:
+    """True if an Orbbec device (USB vendor 2bc5) is enumerated."""
+    try:
+        entries = list(Path("/sys/bus/usb/devices").iterdir())
+    except OSError:
+        return False
+    for entry in entries:
         try:
-            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            if (entry / "idVendor").read_text().strip() == "2bc5":
+                return True
+        except OSError:
+            continue
+    return False
+
+
+USBDEVFS_RESET = 21780  # linux/usbdevice_fs.h, _IO('U', 20)
+
+
+def _orbbec_usb_reset() -> None:
+    """Reset the Orbbec device on the bus — the software replug.
+
+    After a replug the SDK can hold on to a stale device identity, which no
+    fresh driver process inherits away; only a bus-level reset (= what
+    physically re-seating the cable does) reliably clears it. Failures are
+    logged and ignored: the watchdog retry loop still runs.
+    """
+    for entry in Path("/sys/bus/usb/devices").iterdir():
+        try:
+            if (entry / "idVendor").read_text().strip() != "2bc5":
+                continue
+            bus = int((entry / "busnum").read_text())
+            dev = int((entry / "devnum").read_text())
+        except OSError:
+            continue
+        node = Path(f"/dev/bus/usb/{bus:03d}/{dev:03d}")
+        try:
+            fd = os.open(node, os.O_RDWR)
+        except OSError as e:
+            log.warning("usb reset: cannot open %s: %s", node, e)
+            return
+        try:
+            fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+            log.info("usb reset: %s reset ok", node)
+        except OSError as e:
+            log.warning("usb reset: ioctl on %s failed: %s", node, e)
+        finally:
+            os.close(fd)
+        return
+    log.warning("usb reset: no Orbbec device node found")
+
+
+def _watchdog_loop(cfg: dict) -> None:
+    """Restart the driver when it cannot deliver frames on its own.
+
+    The upstream driver reconnects internally, but its USB device state can
+    wedge after an unplug/replug: the device enumerates again for fresh
+    processes while the running one keeps reporting 'serial not found'
+    forever. Only a fresh process recovers. Restart only when the device is
+    actually present (or the driver process exited) so a deliberately
+    removed camera does not cause respawn churn.
+    """
+    stall_s = float(os.environ.get("ORBBEC_STALL_RESTART_S", "20"))
+    cooldown_s = float(os.environ.get("ORBBEC_RESTART_COOLDOWN_S", "60"))
+    retry_s = float(os.environ.get("ORBBEC_RESTART_RETRY_S", "15"))
+    global _respawn_last_mono
+    while True:
+        time.sleep(5.0)
+        now = time.monotonic()
+        proc = _orbbec_proc
+        dead = proc is None or proc.poll() is not None
+        last = _rgb_last_mono or _spawn_mono
+        stalled = now - last > stall_s
+        if not dead and not stalled:
+            continue
+        if not dead and not _orbbec_usb_present():
+            continue
+        # A restart that never delivered a frame did not clear the fault
+        # (Gemini 336L at USB2 often needs a second spawn after a replug);
+        # retry quickly instead of waiting out the full cooldown.
+        cooldown = cooldown_s if _rgb_last_mono > _respawn_last_mono else retry_s
+        if now - _respawn_last_mono < cooldown:
+            continue
+        log.warning("orbbec driver %s (no frames for %.0fs) — restarting",
+                    "exited" if dead else "stalled", now - last)
+        pgid = _kill_orbbec()
+        _orbbec_usb_reset()
+        # A container stuck in kernel USB I/O survives SIGKILL until the
+        # transfer aborts; the bus reset above unblocks it. Do not spawn
+        # while it still holds the device: the fresh driver would come up
+        # without frames.
+        deadline = time.monotonic() + 30.0
+        while pgid is not None and _pgid_alive(pgid) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        try:
+            _spawn_orbbec(cfg)
+        except Exception as e:  # noqa: BLE001
+            log.warning("orbbec driver restart failed: %s", e)
+        _respawn_last_mono = time.monotonic()
 
 
 # ── extrinsics: tf2 lookup once at startup, republish on a latched topic ────
@@ -250,7 +401,8 @@ def _ros_image_to_jpeg(msg) -> bytes:
 
 
 def _on_rgb(msg) -> None:
-    global _latest_rgb_jpeg, _rgb_frame_id
+    global _latest_rgb_jpeg, _rgb_frame_id, _rgb_last_mono
+    _rgb_last_mono = time.monotonic()
     # INIT uses the permanent RGB subscription as its readiness sentinel.
     # Avoid Capability.wait_for_topic(): destroying its temporary subscription
     # while the Zenoh executor is spinning can terminate the shared spin loop.
@@ -347,7 +499,7 @@ def depth_snapshot(msg: Empty) -> Image:
 @cap.on_init
 def init(cfg: dict):
     """REGISTERED → INACTIVE: spawn orbbec, subscribe RGB+depth, declare."""
-    global _extrinsics_pub, _intrinsics_pub
+    global _extrinsics_pub, _intrinsics_pub, _watchdog_started
     cam = cfg.get("camera_name", "camera")
     # Orbbec topics — orbbec_camera.launch.py publishes under /<camera_name>/
     rgb_topic = cfg.get("rgb_topic", f"/{cam}/color/image_raw")
@@ -461,6 +613,16 @@ def init(cfg: dict):
         "robonix/primitive/camera/depth",
         topic=depth_topic, qos="best_effort",
     )
+
+    # Start supervision only after bring-up succeeded; INIT has its own
+    # first-frame sentinel and the watchdog must not race it.
+    if not _watchdog_started:
+        _watchdog_started = True
+        threading.Thread(
+            target=_watchdog_loop, args=(cfg,), daemon=True,
+            name="orbbec-driver-watchdog",
+        ).start()
+
     log.info("init complete: rgb=%s depth=%s + intrinsics=%s extrinsics=%s "
              "+ snapshot/depth_snapshot MCP exposed",
              rgb_topic, depth_topic, intrinsics_topic, extrinsics_topic)
